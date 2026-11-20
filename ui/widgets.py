@@ -4,9 +4,10 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional
 
-from PySide6.QtCore import (QEasingCurve, QPointF, QPropertyAnimation, QRectF, QSize, Qt, QTimer, Signal)
-from PySide6.QtGui import QColor, QPainter, QPixmap
-from PySide6.QtWidgets import (QApplication, QCheckBox, QFrame, QGraphicsOpacityEffect, QHBoxLayout, QLabel,
+from PySide6.QtCore import (QEasingCurve, QPoint, QPointF, QPropertyAnimation, QRect, QRectF, QSize, Qt,
+                            QTimer, Signal)
+from PySide6.QtGui import QColor, QPainter, QPixmap, QRegion
+from PySide6.QtWidgets import (QApplication, QBoxLayout, QCheckBox, QFrame, QGraphicsOpacityEffect, QHBoxLayout, QLabel,
                                QProgressBar, QPushButton, QSizePolicy, QStyle, QStyledItemDelegate,
                                QStyleOptionViewItem, QVBoxLayout, QWidget)
 
@@ -22,8 +23,37 @@ def repolish(widget: QWidget) -> None:
     widget.update()
 
 
+class PressButton(QPushButton):
+    """A button that shrinks to 0.97 while pressed (snappy feedback, no bounce)."""
+
+    def __init__(self, text: str = "", parent: Optional[QWidget] = None) -> None:
+        super().__init__(text, parent)
+        self._rendering = False
+        self.setFocusPolicy(Qt.FocusPolicy.TabFocus)   # keyboard focus ring only, not after a click
+
+    def paintEvent(self, event) -> None:  # noqa: N802
+        if not self.isDown() or self._rendering or not self.isEnabled():
+            super().paintEvent(event)
+            return
+        dpr = self.devicePixelRatioF()
+        pix = QPixmap(int(self.width() * dpr), int(self.height() * dpr))
+        pix.setDevicePixelRatio(dpr)
+        pix.fill(Qt.GlobalColor.transparent)
+        self._rendering = True
+        try:
+            self.render(pix, QPoint(), QRegion(self.rect()), QWidget.RenderFlag.DrawChildren)
+        finally:
+            self._rendering = False
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        p.translate(self.width() / 2, self.height() / 2)
+        p.scale(theme.PRESS_SCALE, theme.PRESS_SCALE)
+        p.translate(-self.width() / 2, -self.height() / 2)
+        p.drawPixmap(0, 0, pix)
+
+
 def button(text: str, variant: str = "", parent: Optional[QWidget] = None, tooltip: str = "") -> QPushButton:
-    b = QPushButton(text, parent)
+    b = PressButton(text, parent)
     if variant:
         b.setProperty("variant", variant)
     b.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -47,7 +77,7 @@ def hline() -> QFrame:
     return line
 
 
-def fade_in(widget: QWidget, duration_ms: int = 160) -> None:
+def fade_in(widget: QWidget, duration_ms: int = theme.ENTER_MS, delay_ms: int = 0) -> None:
     """Short fade used when a page appears. The effect is removed afterwards (keeps text crisp)."""
     effect = QGraphicsOpacityEffect(widget)
     effect.setOpacity(0.0)
@@ -58,8 +88,77 @@ def fade_in(widget: QWidget, duration_ms: int = 160) -> None:
     anim.setEndValue(1.0)
     anim.setEasingCurve(QEasingCurve.Type.OutCubic)
     anim.finished.connect(lambda: widget.setGraphicsEffect(None))
-    anim.start()
     widget._fade_anim = anim  # keep a reference
+    if delay_ms > 0:
+        QTimer.singleShot(delay_ms, anim.start)
+    else:
+        anim.start()
+
+
+_QWIDGETSIZE_MAX = 16777215
+
+
+def adapt_split(root: QBoxLayout, preview: QWidget, narrow: bool, wide_width: Optional[int] = None,
+                narrow_height: int = 240) -> None:
+    """Side-by-side layout on wide windows; stacked (preview below or above) when the window is narrow."""
+    root.setDirection(QBoxLayout.Direction.TopToBottom if narrow else QBoxLayout.Direction.LeftToRight)
+    root.setContentsMargins(*((20, 20, 20, 16) if narrow else (36, 30, 36, 24)))
+    if narrow:
+        preview.setMinimumWidth(0)
+        preview.setMaximumWidth(_QWIDGETSIZE_MAX)
+        preview.setFixedHeight(narrow_height)
+    else:
+        preview.setMinimumHeight(0)
+        preview.setMaximumHeight(_QWIDGETSIZE_MAX)
+        if wide_width:
+            preview.setFixedWidth(wide_width)
+        else:
+            preview.setMinimumWidth(320)
+            preview.setMaximumWidth(_QWIDGETSIZE_MAX)
+
+
+def stagger_in(widgets, step_ms: int = theme.STAGGER_MS) -> None:
+    """Fade a group in one after another, 30 ms apart."""
+    for i, w in enumerate(widgets):
+        fade_in(w, delay_ms=i * step_ms)
+
+
+def crossfade(stack: QWidget, snap: QPixmap, new: QWidget) -> None:
+    """Old and new page overlap: a snapshot of the old page (taken before the switch) fades out,
+    20% faster than the new page fades in, so there is never an empty frame in between."""
+    overlay = QLabel(stack)
+    overlay.setPixmap(snap)
+    overlay.setGeometry(stack.rect())
+    overlay.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+    overlay.show()
+    overlay.raise_()
+    effect = QGraphicsOpacityEffect(overlay)
+    overlay.setGraphicsEffect(effect)
+    out = QPropertyAnimation(effect, b"opacity", overlay)
+    out.setDuration(theme.EXIT_MS)
+    out.setStartValue(1.0)
+    out.setEndValue(0.0)
+    out.setEasingCurve(QEasingCurve.Type.OutCubic)
+    out.finished.connect(overlay.deleteLater)
+    out.start()
+    overlay._anim = out
+    fade_in(new)
+
+
+def pulse(widget: QWidget) -> None:
+    """Quick brightness pulse used to confirm success."""
+    effect = QGraphicsOpacityEffect(widget)
+    widget.setGraphicsEffect(effect)
+    anim = QPropertyAnimation(effect, b"opacity", widget)
+    anim.setDuration(420)
+    anim.setKeyValueAt(0.0, 0.45)
+    anim.setKeyValueAt(0.35, 1.0)
+    anim.setKeyValueAt(0.55, 0.8)
+    anim.setKeyValueAt(1.0, 1.0)
+    anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+    anim.finished.connect(lambda: widget.setGraphicsEffect(None))
+    anim.start()
+    widget._pulse_anim = anim
 
 
 def animate_progress(bar: QProgressBar, value: int, duration_ms: int = 180) -> None:
@@ -324,7 +423,8 @@ class Toast(QFrame):
         self.show()
         self.raise_()
         self._anim.stop()
-        self._anim.setDuration(140)
+        self._anim.setDuration(theme.ENTER_MS)
+        self._anim.setEasingCurve(QEasingCurve.Type.OutCubic)
         self._anim.setStartValue(self._effect.opacity())
         self._anim.setEndValue(1.0)
         self._anim.start()
@@ -332,7 +432,7 @@ class Toast(QFrame):
 
     def _fade_out(self) -> None:
         self._anim.stop()
-        self._anim.setDuration(260)
+        self._anim.setDuration(theme.EXIT_MS)
         self._anim.setStartValue(1.0)
         self._anim.setEndValue(0.0)
         self._anim.finished.connect(self._hide_when_done)
@@ -361,7 +461,7 @@ def pill_color(key: str) -> QColor:
 
 
 class PlatformDelegate(QStyledItemDelegate):
-    """Paints a coloured pill (dot + name) for the platform stored in ``PLATFORM_ROLE``."""
+    """Paints a coloured dot and the platform name for the key stored in ``PLATFORM_ROLE``."""
 
     def paint(self, painter: QPainter, option: QStyleOptionViewItem, index) -> None:
         opt = QStyleOptionViewItem(option)
@@ -370,22 +470,14 @@ class PlatformDelegate(QStyledItemDelegate):
         opt.text = ""
         style = opt.widget.style() if opt.widget else QApplication.style()
         style.drawControl(QStyle.ControlElement.CE_ItemViewItem, opt, painter, opt.widget)
-        key = index.data(PLATFORM_ROLE) or ""
-        base = pill_color(key)
+        base = pill_color(index.data(PLATFORM_ROLE) or "")
         painter.save()
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        width = opt.fontMetrics.horizontalAdvance(text) + 30
-        height = 22.0
-        rect = QRectF(opt.rect.left() + 10, opt.rect.center().y() - height / 2, width, height)
-        fill = QColor(base)
-        fill.setAlphaF(0.16)
         painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(fill)
-        painter.drawRoundedRect(rect, 11, 11)
         painter.setBrush(base)
-        painter.drawEllipse(QPointF(rect.left() + 11, rect.center().y()), 3.5, 3.5)
+        painter.drawEllipse(QPointF(opt.rect.left() + 16, opt.rect.center().y()), 4, 4)
         painter.setPen(theme.color("text"))
-        painter.drawText(QRectF(rect.left() + 21, rect.top(), rect.width() - 24, rect.height()),
+        painter.drawText(QRectF(opt.rect.left() + 30, opt.rect.top(), opt.rect.width() - 34, opt.rect.height()),
                          int(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft), text)
         painter.restore()
 

@@ -122,6 +122,7 @@ class ResultsPage(QWidget):
         self.preview = PreviewPane()
         self.preview.setFixedWidth(360)
         root.addWidget(self.preview)
+        self.split_root, self.preview_width = root, 360
 
         self.table.itemSelectionChanged.connect(self._on_selection)
         self.table.customContextMenuRequested.connect(self._menu)

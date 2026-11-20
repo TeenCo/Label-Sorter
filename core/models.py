@@ -114,7 +114,7 @@ class PageInfo:
             if lab.status is Status.UNRECOGNIZED:
                 flags.append(Flag(FlagKind.UNRECOGNIZED, prefix + (lab.detail or "platform not recognized"), True))
             elif lab.status is Status.SKIPPED:
-                flags.append(Flag(FlagKind.SKIPPED, prefix + "skipped - not included in the eBay/TikTok PDFs", True))
+                flags.append(Flag(FlagKind.SKIPPED, prefix + "skipped - not included in the eBay, TikTok or InPost PDFs", True))
             if lab.duplicate_of:
                 flags.append(Flag(FlagKind.DUPLICATE, f"{prefix}duplicate of {lab.duplicate_of}", False))
         return flags

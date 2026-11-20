@@ -76,12 +76,13 @@ def _contains(outer: Box, inner: Box, eps: float = 0.01) -> bool:
             and outer[2] >= inner[2] - eps and outer[3] >= inner[3] - eps)
 
 
-def collect_elements(page) -> list[Element]:
-    """Gather the visible building blocks of a page (read-only)."""
+def collect_elements(page, words=None) -> list[Element]:
+    """Gather the visible building blocks of a page (read-only). ``words`` may be passed in when
+    the caller already extracted them (saves a second text extraction)."""
     rect = page.rect
     page_area = max(rect.width * rect.height, 1.0)
     els: list[Element] = []
-    for w in page.get_text("words"):
+    for w in (words if words is not None else page.get_text("words")):
         els.append(Element((float(w[0]), float(w[1]), float(w[2]), float(w[3])), "w"))
     for info in page.get_image_info():
         b = info["bbox"]
@@ -202,9 +203,9 @@ class Detection:
     reason: str = ""
 
 
-def detect_cells(page) -> Detection:
+def detect_cells(page, words=None) -> Detection:
     """Find individual label rectangles on a page larger than one label."""
-    els = collect_elements(page)
+    els = collect_elements(page, words)
     if not els:
         return Detection([])
     pr = page.rect

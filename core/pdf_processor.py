@@ -85,16 +85,18 @@ def generate_outputs(result: AnalysisResult, out_dir: Path, progress: Optional[P
             pages_by_file.setdefault(page.file_index, []).append(page)
         total = len(result.pages)
         done = 0
-        for file_no, finfo in enumerate(result.files, start=1):
+        readable_no = 0
+        for file_index, finfo in enumerate(result.files):
             if not finfo.ok:
                 continue
+            readable_no += 1
             src = fitz.open(str(finfo.path))
             try:
                 if src.page_count != finfo.page_count:
                     raise RuntimeError(f"{finfo.path.name} changed during processing "
                                        f"({src.page_count} pages instead of {finfo.page_count})")
                 docs["PRINTS"].insert_pdf(src)  # every original page, unmodified, in order
-                for page in pages_by_file.get(file_no - 1, []):
+                for page in pages_by_file.get(file_index, []):
                     for lab in page.labels:
                         if lab.status is not Status.CLASSIFIED or lab.platform is None:
                             continue
@@ -104,7 +106,7 @@ def generate_outputs(result: AnalysisResult, out_dir: Path, progress: Optional[P
                             target.load_page(target.page_count - 1).set_cropbox(fitz.Rect(*lab.rect))
                     done += 1
                     if progress:
-                        progress(Progress("Generating", finfo.path.name, file_no, len(good),
+                        progress(Progress("Generating", finfo.path.name, readable_no, len(good),
                                           page.page_number, finfo.page_count, done, total))
             finally:
                 src.close()

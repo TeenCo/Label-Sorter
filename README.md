@@ -103,7 +103,28 @@ python -m unittest discover -s tests -t . -v        (or: pytest)
 
 ## 7. Build an .exe
 
+On Windows, double-click or run:
+
 ```
 build_exe.bat
 ```
-Builds a windowed `--onedir` app (no console needed). Tesseract is not bundled.
+It creates `.venv` if needed, installs the requirements and PyInstaller, and builds
+`dist\ShippingLabelSorter\ShippingLabelSorter.exe` (windowed, no console, with the app icon). It is a
+folder build on purpose: a single-file exe unpacks itself on every launch and starts several seconds
+slower. Zip the whole `dist\ShippingLabelSorter` folder to move it to another PC. Tesseract is not bundled.
+
+## 8. Window behaviour
+
+* **Fullscreen:** `F11` toggles it, `Esc` leaves it. Content stays centred (max 1500 px wide) on big screens.
+* **Small / cropped windows:** below 1000 px the sidebar becomes an icon rail; below 980 px the preview
+  moves under the content. Minimum window size is 760 x 520.
+* **Minimised:** live previews pause while minimised (the analysis keeps running).
+* Window size and position are remembered between runs.
+
+## 9. Speed notes
+
+* Live preview renders the already-open page as JPEG (no reopening the file, no PNG compression).
+* Tesseract is only started when a label actually needs OCR.
+* PyMuPDF loads in the background while the window is built; the Results, Exceptions and Output pages are
+  built right after the first paint.
+* Text is extracted once per page; recent on-screen previews are cached.

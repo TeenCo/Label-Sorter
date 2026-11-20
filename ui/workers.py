@@ -18,7 +18,7 @@ from core import config, pdf_processor
 from core.classifier import OcrEngine
 from core.models import AnalysisResult, AskContext, Box, LabelInfo, PageInfo, Status
 from core.pdf_analyzer import AnalysisCancelled, AnalysisHooks, analyze
-from core.rendering import render_page_png
+from core.rendering import render_open_page, render_page_png
 
 log = logging.getLogger(__name__)
 
@@ -64,8 +64,12 @@ def _caption(path: Path, page_number: int, rect: Optional[Box], label_number: in
     return where + (f" · label {label_number} of {label_total}" if label_total > 1 else "")
 
 
-def _render(path: Path, page_number: int, rect: Optional[Box], max_side: int) -> bytes:
+def _render(path: Path, page_number: int, rect: Optional[Box], max_side: int, page=None,
+            fmt: str = "png") -> bytes:
+    """Render from the already-open page when we have it; otherwise reopen the file."""
     try:
+        if page is not None:
+            return render_open_page(page, rect, max_side, fmt)
         return render_page_png(path, page_number, rect, max_side)
     except Exception as exc:  # noqa: BLE001
         log.warning("Preview failed for %s page %s: %s", path, page_number, exc)
@@ -80,26 +84,33 @@ class QtHooks(AnalysisHooks):
         self.cancel_event = cancel_event
         self._answers: queue.Queue = queue.Queue()
         self._last_live = 0.0
+        self._last_progress = 0.0
+        self.live_previews = True          # the UI turns this off while the window is minimised
         self._pending_frame: Optional[PreviewFrame] = None
 
     # -- engine -> UI
     def progress(self, p) -> None:
-        self.signals.progress.emit(p)
+        now = time.monotonic()            # ~25 updates a second is plenty; always send the last one
+        if p.done >= p.total or now - self._last_progress >= 0.04:
+            self._last_progress = now
+            self.signals.progress.emit(p)
 
     def log(self, message: str, level: str = "info") -> None:
         self.signals.log.emit(message)
 
-    def page_started(self, path: Path, page_number: int) -> None:
+    def page_started(self, path: Path, page_number: int, page=None) -> None:
+        if not self.live_previews:
+            return
         now = time.monotonic()
         if now - self._last_live < config.LIVE_PREVIEW_MIN_INTERVAL_S:
             return
         self._last_live = now
-        png = _render(path, page_number, None, config.LIVE_PREVIEW_MAX_SIDE_PX)
-        self.signals.preview.emit(PreviewFrame(png, _caption(path, page_number, None)))
+        jpg = _render(path, page_number, None, config.LIVE_PREVIEW_MAX_SIDE_PX, page, "jpeg")
+        self.signals.preview.emit(PreviewFrame(jpg, _caption(path, page_number, None)))
 
-    def show_preview(self, path: Path, page_number: int, rect: Optional[Box]) -> None:
+    def show_preview(self, path: Path, page_number: int, rect: Optional[Box], page=None) -> None:
         """Called right before a question: render the exact label region in higher quality."""
-        png = _render(path, page_number, rect, config.PREVIEW_MAX_SIDE_PX)
+        png = _render(path, page_number, rect, config.PREVIEW_MAX_SIDE_PX, page, "png")
         self._pending_frame = PreviewFrame(png, _caption(path, page_number, rect), (path, page_number, rect))
 
     def label_done(self, page: PageInfo, label: LabelInfo) -> None:
@@ -147,9 +158,9 @@ class AnalysisWorker(QThread):
     def run(self) -> None:
         signals = self.hooks.signals
         try:
-            ocr = OcrEngine()
-            signals.log.emit("OCR fallback: " + ("available" if ocr.available else f"not available ({ocr.problem})"))
-            result = analyze(self.files, self.hooks, ocr)
+            # OCR is probed lazily, the first time a label really needs it (the probe starts a
+            # Tesseract process, which used to delay the first page on every run).
+            result = analyze(self.files, self.hooks, OcrEngine())
             signals.finished.emit(result)
         except AnalysisCancelled:
             signals.cancelled.emit()

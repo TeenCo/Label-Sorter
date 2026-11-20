@@ -28,10 +28,12 @@ class AnalysisHooks:
 
     def log(self, message: str, level: str = "info") -> None: ...
 
-    def show_preview(self, path: Path, page_number: int, rect: Optional[Box]) -> None: ...
+    def show_preview(self, path: Path, page_number: int, rect: Optional[Box], page=None) -> None:
+        """Show the label about to be asked about. ``page`` is the open PyMuPDF page (may be None)."""
 
-    def page_started(self, path: Path, page_number: int) -> None:
-        """A page is about to be analysed (used for the live view)."""
+    def page_started(self, path: Path, page_number: int, page=None) -> None:
+        """A page is about to be analyzed (used for the live view). ``page`` is the already-open
+        PyMuPDF page, so the UI can render it without reopening the file."""
 
     def label_done(self, page: PageInfo, label: LabelInfo) -> None:
         """A label has its final result for this run (classified, skipped or left unresolved)."""
@@ -88,15 +90,15 @@ def _fingerprint(text: str) -> str:
     return hashlib.sha1(norm.encode()).hexdigest() if len(norm) >= 40 else ""
 
 
-def _plan_cells(page, info: PageInfo) -> list[Optional[Box]]:
+def _plan_cells(page, info: PageInfo, words=None) -> list[Optional[Box]]:
     """Decide how many labels a page holds. [None] means 'the whole page is one label'."""
     safe, why = crop_is_safe(page)
     if not safe:
         info.static_flags.append(Flag(
             FlagKind.MULTI_UNSPLIT,
-            f"Page is larger than one label but cannot be analysed or cropped safely ({why}); kept whole", True))
+            f"Page is larger than one label but cannot be analyzed or cropped safely ({why}); kept whole", True))
         return [None]
-    det = detect_cells(page)
+    det = detect_cells(page, words)
     if not det.reliable:
         info.static_flags.append(Flag(
             FlagKind.MULTI_UNSPLIT,
@@ -112,21 +114,25 @@ def _plan_cells(page, info: PageInfo) -> list[Optional[Box]]:
 
 def _analyze_page(doc, path: Path, file_index: int, page_index: int, ocr: OcrEngine,
                   hooks: AnalysisHooks, seen: dict[str, str]) -> PageInfo:
-    hooks.page_started(path, page_index + 1)
     page = doc.load_page(page_index)
+    hooks.page_started(path, page_index + 1, page)
     w, h = float(page.rect.width), float(page.rect.height)
     size_class = classify_size(w, h)
     info = PageInfo(file_index=file_index, path=path, page_number=page_index + 1, width=w, height=h,
                     rotation=int(page.rotation), size_class=size_class.value)
 
     cells: list[Optional[Box]] = [None]
+    words = None                        # extracted at most once per page
     if size_class is not SizeClass.LABEL_4X6:
         info.static_flags.append(Flag(FlagKind.NON_STANDARD_SIZE, describe_size(w, h, size_class), False))
         if w * h >= config.MULTI_LABEL_MIN_AREA_FACTOR * config.LABEL_W * config.LABEL_H:
-            cells = _plan_cells(page, info)
+            words = page.get_text("words")
+            cells = _plan_cells(page, info, words)
 
     page_text = page.get_text("text") if None in cells else ""
-    words = page.get_text("words") if any(c is not None for c in cells) else []
+    if any(c is not None for c in cells) and words is None:
+        words = page.get_text("words")
+    words = words or []
 
     for index, cell in enumerate(cells):
         size = (w, h) if cell is None else (cell[2] - cell[0], cell[3] - cell[1])
@@ -149,13 +155,13 @@ def _analyze_page(doc, path: Path, file_index: int, page_index: int, ocr: OcrEng
                 seen[fp] = f"{path.name} page {page_index + 1}"
         info.labels.append(label)
         if label.status is Status.UNRECOGNIZED:
-            _ask_user(info, label, text, hooks, cls)
+            _ask_user(info, label, text, hooks, cls, page)
         hooks.label_done(info, label)
     return info
 
 
-def _ask_user(info: PageInfo, label: LabelInfo, text: str, hooks: AnalysisHooks, cls) -> None:
-    hooks.show_preview(info.path, info.page_number, label.rect)
+def _ask_user(info: PageInfo, label: LabelInfo, text: str, hooks: AnalysisHooks, cls, page=None) -> None:
+    hooks.show_preview(info.path, info.page_number, label.rect, page)
     ctx = AskContext(filename=info.filename, page_number=info.page_number,
                      label_number=label.index + 1, label_total=len(info.labels),
                      reason=label.detail or "platform not recognized", excerpt=excerpt(text),
@@ -177,7 +183,7 @@ def _error_page(doc, path: Path, file_index: int, page_index: int, exc: Exceptio
         w, h, rotation = float(page.rect.width), float(page.rect.height), int(page.rotation)
     except Exception:  # noqa: BLE001
         pass
-    label = LabelInfo(index=0, rect=None, out_size=(w, h), detail=f"page could not be analysed ({exc})")
+    label = LabelInfo(index=0, rect=None, out_size=(w, h), detail=f"page could not be analyzed ({exc})")
     info = PageInfo(file_index=file_index, path=path, page_number=page_index + 1, width=w, height=h,
                     rotation=rotation, size_class=classify_size(w, h).value, labels=[label])
     info.static_flags.append(Flag(FlagKind.ANALYSIS_ERROR, f"Analysis failed: {exc}", True))

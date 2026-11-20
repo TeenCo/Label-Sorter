@@ -9,7 +9,7 @@ from core.models import Platform
 
 @dataclass(frozen=True)
 class PlatformSpec:
-    """How one platform is recognised in label text.
+    """How one platform is recognized in label text.
 
     ``patterns`` run against the text (or OCR output) of a single label. Add
     a pattern here to teach the app another spelling; nothing else needs to change.

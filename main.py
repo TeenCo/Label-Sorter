@@ -1,9 +1,11 @@
 """Entry point:  python main.py"""
 from __future__ import annotations
 
+import importlib.util
 import logging
 import logging.handlers
 import sys
+import threading
 
 from core import config
 
@@ -32,16 +34,22 @@ def _missing(package: str) -> int:
     return 1
 
 
+def _preload_pdf_engine() -> None:
+    try:
+        import fitz  # noqa: F401  (the slow part of the first analysis: load it while the window builds)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def main() -> int:
     setup_logging()
-    try:
-        import fitz  # noqa: F401
-    except ImportError:
+    # find_spec only checks that a package exists; it does not import it (importing PySide6 and
+    # PyMuPDF here used to happen twice, once for the check and once for real).
+    if importlib.util.find_spec("fitz") is None:
         return _missing("PyMuPDF")
-    try:
-        import PySide6  # noqa: F401
-    except ImportError:
+    if importlib.util.find_spec("PySide6") is None:
         return _missing("PySide6")
+    threading.Thread(target=_preload_pdf_engine, name="preload-pdf", daemon=True).start()
     import ui
     return ui.run()
 

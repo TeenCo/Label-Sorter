@@ -10,7 +10,7 @@ from PySide6.QtWidgets import QFrame, QHBoxLayout, QProgressBar, QStackedLayout,
 from core import file_manager, pdf_processor
 from core.models import AnalysisResult, Progress
 from ui import theme
-from ui.widgets import Banner, Card, animate_progress, button, fade_in, label, set_state
+from ui.widgets import Banner, Card, animate_progress, button, fade_in, label, pulse, set_state, stagger_in
 
 KIND_TITLES = {"EBAY": "eBay labels", "TIKTOK": "TikTok labels", "INPOST": "InPost labels",
                "PRINTS": "PRINTS: every original page"}
@@ -146,6 +146,7 @@ class OutputPage(QWidget):
             item = self.files_box.takeAt(0)
             if item.widget():
                 item.widget().deleteLater()
+        cards = []
         for kind in ("EBAY", "TIKTOK", "INPOST", "PRINTS"):
             path = gen.outputs.get(kind)
             if path is None:
@@ -165,6 +166,7 @@ class OutputPage(QWidget):
             b.clicked.connect(lambda _=False, f=path.parent: file_manager.open_folder(f))
             lay.addWidget(b)
             self.files_box.addWidget(card)
+            cards.append(card)
         names = [p.name for p in (gen.report_path, gen.csv_path) if p]
         self.reports.setText("Also saved: " + ", ".join(names) if names else "")
         s = result.stats()
@@ -184,6 +186,9 @@ class OutputPage(QWidget):
         self.delete_btn.setText(f"Delete {count} original file{'s' if count != 1 else ''}…")
         self.stack.setCurrentIndex(1)
         fade_in(self.stack.currentWidget())
+        stagger_in(cards)
+        if not gen.errors:
+            pulse(self.verified)
 
     def show_failure(self, gen: pdf_processor.GenerationResult) -> None:
         self.title.setText("The PDFs could not be generated")

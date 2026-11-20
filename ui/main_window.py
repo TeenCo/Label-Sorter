@@ -6,8 +6,8 @@ import sys
 import threading
 from typing import Optional
 
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QCloseEvent, QKeySequence, QShortcut
+from PySide6.QtCore import QEvent, QSettings, Qt, QTimer
+from PySide6.QtGui import QCloseEvent, QIcon, QKeySequence, QShortcut
 from PySide6.QtWidgets import QApplication, QHBoxLayout, QMainWindow, QStackedWidget, QWidget
 
 from core import config, file_manager
@@ -20,20 +20,30 @@ from ui.pages.files_page import FilesPage
 from ui.pages.output_page import OutputPage
 from ui.pages.results_page import ResultsPage
 from ui.sidebar import Sidebar
-from ui.widgets import Toast, fade_in
+from ui.widgets import Toast, adapt_split, crossfade, fade_in
 from ui.workers import AnalysisSignals, AnalysisWorker, GenerationSignals, GenerationWorker, QtHooks
 
 log = logging.getLogger(__name__)
 
 FILES, ANALYSIS, RESULTS, EXCEPTIONS, OUTPUT = range(5)
 
+COMPACT_BELOW = 1000        # window width (px) under which the sidebar becomes an icon rail
+NARROW_BELOW = 980          # ... and pages stack their preview under the content
+MAX_CONTENT_WIDTH = 1500    # on fullscreen / ultrawide screens the content stays centred
+
 
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle(config.APP_NAME)
+        icon = config.resource_path("assets", "app.ico")
+        if icon.is_file():
+            self.setWindowIcon(QIcon(str(icon)))
+        self.setMinimumSize(760, 520)                 # small ("cropped") windows stay usable
         self.resize(1320, 840)
-        self.setMinimumSize(1080, 700)
+        self._settings = QSettings("ShippingLabelSorter", "ShippingLabelSorter")
+        self._narrow: Optional[bool] = None
+        self._deferred_built = False
 
         # ---- batch state
         self.result: Optional[AnalysisResult] = None
@@ -54,18 +64,22 @@ class MainWindow(QMainWindow):
         row.setSpacing(0)
         self.sidebar = Sidebar()
         row.addWidget(self.sidebar)
+        row.addStretch(1)                              # content is centred when the window is very wide
         self.stack = QStackedWidget()
         self.stack.setObjectName("Content")
-        row.addWidget(self.stack, 1)
+        self.stack.setMaximumWidth(MAX_CONTENT_WIDTH)
+        row.addWidget(self.stack, 1000)                # ~1 px of slack at normal sizes, centred when capped
+        row.addStretch(1)
         self.setCentralWidget(root)
 
+        # Only the first two pages are built before the window appears; the rest are built right
+        # after the first paint (or earlier if needed), which gets the window on screen sooner.
         self.files_page = FilesPage()
         self.analysis_page = AnalysisPage()
-        self.results_page = ResultsPage()
-        self.exceptions_page = ExceptionsPage()
-        self.output_page = OutputPage()
-        for page in (self.files_page, self.analysis_page, self.results_page, self.exceptions_page, self.output_page):
-            self.stack.addWidget(page)
+        self.stack.addWidget(self.files_page)
+        self.stack.addWidget(self.analysis_page)
+        for _ in (RESULTS, EXCEPTIONS, OUTPUT):
+            self.stack.addWidget(QWidget())            # placeholders keep the step indexes stable
         self.toast = Toast(root)
 
         # ---- wiring
@@ -74,6 +88,31 @@ class MainWindow(QMainWindow):
         self.files_page.message.connect(self.toast.show_message)
         self.analysis_page.decided.connect(self._relay_answer)
         self.analysis_page.cancel_requested.connect(self._cancel_analysis)
+
+        QShortcut(QKeySequence("Ctrl+O"), self, activated=self._browse_shortcut)
+        QShortcut(QKeySequence("F11"), self, activated=self._toggle_fullscreen)
+        QShortcut(QKeySequence("Esc"), self, activated=self._leave_fullscreen)
+        self._go(FILES, animate=False)
+        self._restore_window()
+        self._apply_layout_mode(force=True)
+        QTimer.singleShot(0, self._build_deferred_pages)
+
+    def _build_deferred_pages(self) -> None:
+        """Results, Exceptions and Output are needed only after an analysis."""
+        if self._deferred_built:
+            return
+        self._deferred_built = True
+        self.results_page = ResultsPage()
+        self.exceptions_page = ExceptionsPage()
+        self.output_page = OutputPage()
+        for index, page in ((RESULTS, self.results_page), (EXCEPTIONS, self.exceptions_page),
+                            (OUTPUT, self.output_page)):
+            placeholder = self.stack.widget(index)
+            current = self.stack.currentIndex()
+            self.stack.removeWidget(placeholder)
+            placeholder.deleteLater()
+            self.stack.insertWidget(index, page)
+            self.stack.setCurrentIndex(current)
         self.results_page.continue_requested.connect(lambda: self._go(EXCEPTIONS))
         self.results_page.changed.connect(self._results_changed)
         self.results_page.message.connect(self.toast.show_message)
@@ -84,9 +123,7 @@ class MainWindow(QMainWindow):
         self.output_page.delete_requested.connect(self._delete_originals)
         self.output_page.new_batch_requested.connect(self._new_batch)
         self.output_page.back_requested.connect(lambda: self._go(EXCEPTIONS))
-
-        QShortcut(QKeySequence("Ctrl+O"), self, activated=self._browse_shortcut)
-        self._go(FILES, animate=False)
+        self._apply_layout_mode(force=True)
 
     # ------------------------------------------------------------ navigation
     def _states(self) -> list[str]:
@@ -107,9 +144,12 @@ class MainWindow(QMainWindow):
         if index == EXCEPTIONS and self.result is not None:
             self.exceptions_page.load(self.result)
         self.unlocked.add(index)
+        old = self.stack.currentWidget()
+        snapshot = old.grab() if (animate and self.isVisible() and not self.isMinimized()) else None
         self.stack.setCurrentIndex(index)
-        if animate:
-            fade_in(self.stack.currentWidget())
+        new = self.stack.currentWidget()
+        if snapshot is not None and old is not new:
+            crossfade(self.stack, snapshot, new)
         self.sidebar.set_states(self._states())
 
     def _on_step(self, index: int) -> None:
@@ -137,6 +177,7 @@ class MainWindow(QMainWindow):
         files = self.files_page.files()
         if not files or self._analyzing():
             return
+        self._build_deferred_pages()
         self.result, self.gen = None, None
         self.done = {FILES}
         self.unlocked = {FILES, ANALYSIS}
@@ -308,8 +349,50 @@ class MainWindow(QMainWindow):
             except Exception:  # noqa: BLE001
                 pass
 
+    def _apply_layout_mode(self, force: bool = False) -> None:
+        """Responsive rules: icon-only sidebar and stacked previews on narrow windows."""
+        width = self.width()
+        self.sidebar.set_compact(width < COMPACT_BELOW, animate=not force)
+        narrow = width < NARROW_BELOW
+        if narrow == self._narrow and not force:
+            return
+        self._narrow = narrow
+        pages = [self.analysis_page]
+        if self._deferred_built:
+            pages += [self.results_page, self.exceptions_page]
+        for page in pages:
+            adapt_split(page.split_root, page.preview, narrow, page.preview_width)
+
+    def _toggle_fullscreen(self) -> None:
+        if self.isFullScreen():
+            self._leave_fullscreen()
+        else:
+            self._was_maximized = self.isMaximized()
+            self.showFullScreen()
+
+    def _leave_fullscreen(self) -> None:
+        if self.isFullScreen():
+            if getattr(self, "_was_maximized", False):
+                self.showMaximized()
+            else:
+                self.showNormal()
+
+    def changeEvent(self, event) -> None:  # noqa: N802
+        super().changeEvent(event)
+        hooks = getattr(self, "hooks", None)
+        if event.type() == QEvent.Type.WindowStateChange and hooks is not None:
+            # nothing to draw while minimised: skip live previews (analysis itself keeps running)
+            hooks.live_previews = not self.isMinimized()
+
+    def _restore_window(self) -> None:
+        geometry = self._settings.value("geometry")
+        if geometry:
+            self.restoreGeometry(geometry)
+
     def resizeEvent(self, event) -> None:  # noqa: N802
         super().resizeEvent(event)
+        if hasattr(self, "sidebar"):
+            self._apply_layout_mode()
         if self.toast.isVisible():
             self.toast.move((self.centralWidget().width() - self.toast.width()) // 2,
                             self.centralWidget().height() - self.toast.height() - 28)
@@ -323,6 +406,8 @@ class MainWindow(QMainWindow):
         if worker is not None and worker.isRunning():
             self.cancel_event.set()
             worker.wait(4000)
+        if not self.isFullScreen() and not self.isMinimized():
+            self._settings.setValue("geometry", self.saveGeometry())
         event.accept()
 
 

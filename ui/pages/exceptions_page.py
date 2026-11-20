@@ -69,7 +69,7 @@ class ExceptionsPage(QWidget):
                                     QHeaderView.ResizeMode.Stretch)):
             head.setSectionResizeMode(col, mode)
         self.table.setColumnWidth(0, 140)
-        self.empty = label("No flagged pages.\nEvery page was recognised cleanly.", "Muted")
+        self.empty = label("No flagged pages.\nEvery page was recognized cleanly.", "Muted")
         self.empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.stack.addWidget(self.table)
         self.stack.addWidget(self.empty)
@@ -93,6 +93,7 @@ class ExceptionsPage(QWidget):
         self.preview = PreviewPane()
         self.preview.setFixedWidth(360)
         root.addWidget(self.preview)
+        self.split_root, self.preview_width = root, 360
         self.table.itemSelectionChanged.connect(self._on_selection)
 
     # ------------------------------------------------------------

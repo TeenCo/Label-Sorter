@@ -64,10 +64,16 @@ TESSERACT_CANDIDATES = [
 # Output
 # --------------------------------------------------------------------------
 PREVIEW_MAX_SIDE_PX = 900
-LIVE_PREVIEW_MAX_SIDE_PX = 640     # preview shown while analysis is running
-LIVE_PREVIEW_MIN_INTERVAL_S = 0.12  # at most ~8 live previews per second
+LIVE_PREVIEW_MAX_SIDE_PX = 520     # preview shown while analysis is running (JPEG)
+LIVE_PREVIEW_MIN_INTERVAL_S = 0.15  # at most ~6 live previews per second
 DISK_SPACE_SAFETY_BYTES = 50 * 1024 * 1024
 VERIFY_SIZE_TOLERANCE_PT = 0.6
+
+
+def resource_path(*parts: str) -> Path:
+    """Bundled resource (icon ...): next to the sources, or inside the PyInstaller bundle."""
+    base = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent.parent))
+    return base.joinpath(*parts)
 
 
 def log_directory() -> Path:

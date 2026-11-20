@@ -13,7 +13,7 @@ from core import platforms
 from core.models import SKIP_CODE, AskContext, Platform, Progress
 from ui import theme
 from ui.widgets import (PLATFORM_ROLE, Card, PlatformDelegate, PreviewPane, StatTile, animate_progress, button,
-                        fade_in, label, repolish, set_state)
+                        fade_in, label, repolish, set_state, stagger_in)
 from ui.workers import LabelEvent, PreviewFrame
 
 FEED_LIMIT = 150
@@ -35,6 +35,7 @@ class AnalysisPage(QWidget):
         self.preview = PreviewPane()
         self.preview.setMinimumWidth(320)
         root.addWidget(self.preview, 5)
+        self.split_root, self.preview_width = root, None
 
         right = QVBoxLayout()
         right.setSpacing(14)
@@ -161,6 +162,7 @@ class AnalysisPage(QWidget):
         self.log_label.setText("")
         self.cancel_btn.setVisible(True)
         self.cancel_btn.setEnabled(True)
+        stagger_in(list(self.tiles.values()))
 
     def finish(self) -> None:
         self._asking = False
